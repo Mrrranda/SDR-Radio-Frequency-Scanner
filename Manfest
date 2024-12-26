@@ -1,0 +1,1538 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.rfscanner">
+
+    <!-- Required Permissions -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.RFScanner">
+
+        <activity
+            android:name=".activities.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".activities.ScannerActivity"
+            android:label="@string/scanner_activity_title" />
+
+        <service
+            android:name=".services.ScannerService"
+            android:foregroundServiceType="location" />
+    </application>
+</manifest>
+package com.rfscanner.models;
+
+public class Frequency {
+    private double frequency;
+    private String band;
+    private double signalStrength;
+    private boolean isActive;
+
+    public Frequency(double frequency) {
+        this.frequency = frequency;
+        this.isActive = false;
+        this.signalStrength = 0.0;
+        this.band = determineBand(frequency);
+    }
+
+    private String determineBand(double freq) {
+        if (freq >= 30 && freq <= 300) {
+            return "VHF";
+        } else if (freq > 300 && freq <= 3000) {
+            return "UHF";
+        } else if (freq >= 0.535 && freq <= 1.7) {
+            return "AM";
+        } else if (freq >= 87.5 && freq <= 108) {
+            return "FM";
+        } else {
+            return "OTHER";
+        }
+    }
+
+    // Getters and Setters
+    public double getFrequency() {
+        return frequency;
+    }
+
+    public String getBand() {
+        return band;
+    }
+
+    public double getSignalStrength() {
+        return signalStrength;
+    }
+
+    public void setSignalStrength(double signalStrength) {
+        this.signalStrength = signalStrength;
+    }
+
+    public boolean isActive() {
+        return isActive;
+    }
+
+    public void setActive(boolean active) {
+        isActive = active;
+    }
+}
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tvCurrentFreq"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Current Frequency: 0.0 MHz"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"/>
+
+    <SeekBar
+        android:id="@+id/frequencySeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/tvCurrentFreq"/>
+
+    <TextView
+        android:id="@+id/tvSignalStrength"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Signal Strength: 0 dB"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/frequencySeekBar"
+        app:layout_constraintStart_toStartOf="parent"/>
+
+    <ProgressBar
+        android:id="@+id/signalMeter"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        app:layout_constraintTop_toBottomOf="@id/tvSignalStrength"/>
+
+    <Spinner
+        android:id="@+id/bandSelector"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/signalMeter"/>
+
+    <Button
+        android:id="@+id/btnStartScan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start Scanning"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/bandSelector"/>
+
+    <Switch
+        android:id="@+id/switchBackground"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Background Scanning"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/btnStartScan"/>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+package com.rfscanner.activities;
+
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.widget.ArrayAdapter;
+import android.widget.Button;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import com.rfscanner.R;
+import com.rfscanner.services.ScannerService;
+import com.rfscanner.utils.FrequencyUtils;
+
+public class MainActivity extends AppCompatActivity {
+    private static final int PERMISSION_REQUEST_CODE = 123;
+    private static final String[] REQUIRED_PERMISSIONS = {
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+            Manifest.permission.MODIFY_AUDIO_SETTINGS
+    };
+
+    private SeekBar frequencySeekBar;
+    private TextView tvCurrentFreq;
+    private TextView tvSignalStrength;
+    private Spinner bandSelector;
+    private Button btnStartScan;
+    private Switch switchBackground;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        initializeViews();
+        setupBandSpinner();
+        setupFrequencyControls();
+        checkPermissions();
+    }
+
+    private void initializeViews() {
+        frequencySeekBar = findViewById(R.id.frequencySeekBar);
+        tvCurrentFreq = findViewById(R.id.tvCurrentFreq);
+        tvSignalStrength = findViewById(R.id.tvSignalStrength);
+        bandSelector = findViewById(R.id.bandSelector);
+        btnStartScan = findViewById(R.id.btnStartScan);
+        switchBackground = findViewById(R.id.switchBackground);
+
+        btnStartScan.setOnClickListener(v -> startScanning());
+        switchBackground.setOnCheckedChangeListener((buttonView, isChecked) -> 
+            toggleBackgroundScanning(isChecked));
+    }
+
+    private void setupBandSpinner() {
+        String[] bands = {"VHF", "UHF", "AM", "FM"};
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+            this, android.R.layout.simple_spinner_item, bands);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        bandSelector.setAdapter(adapter);
+        
+        bandSelector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                updateFrequencyRange(bands[position]);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+    }
+
+    private void updateFrequencyRange(String band) {
+        switch (band) {
+            case "VHF":
+                frequencySeekBar.setMax(300000); // 30-300 MHz
+                frequencySeekBar.setMin(30000);
+                break;
+            case "UHF":
+                frequencySeekBar.setMax(3000000); // 300-3000 MHz
+                frequencySeekBar.setMin(300000);
+                break;
+            case "AM":
+                frequencySeekBar.setMax(1700); // 535-1700 kHz
+                frequencySeekBar.setMin(535);
+                break;
+            case "FM":
+                frequencySeekBar.setMax(108000); // 87.5-108 MHz
+                frequencySeekBar.setMin(87500);
+                break;
+        }
+    }
+
+    private void setupFrequencyControls() {
+        frequencySeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                updateFrequencyDisplay(progress);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+    }
+
+    private void updateFrequencyDisplay(int progress) {
+        double frequency = FrequencyUtils.convertToMHz(progress);
+        tvCurrentFreq.setText(String.format("Current Frequency: %.3f MHz", frequency));
+    }
+
+    private void checkPermissions() {
+        if (!hasRequiredPermissions()) {
+            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, 
+                PERMISSION_REQUEST_CODE);
+        }
+    }
+
+    private boolean hasRequiredPermissions() {
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(this, permission) 
+                != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void startScanning() {
+        if (!hasRequiredPermissions()) {
+            Toast.makeText(this, "Required permissions not granted", 
+                Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Intent intent = new Intent(this, ScannerService.class);
+        intent.putExtra("frequency", frequencySeekBar.getProgress());
+        intent.putExtra("band", bandSelector.getSelectedItem().toString());
+        
+        startService(intent);
+    }
+
+    private void toggleBackgroundScanning(boolean enabled) {
+        // Implementation for background scanning toggle
+        if (enabled) {
+            Toast.makeText(this, "Background scanning enabled", 
+                Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Background scanning disabled", 
+                Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                         @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && 
+                grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Permissions granted", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Permissions denied", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+}
+package com.rfscanner.services;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
+import android.content.Intent;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.os.Build;
+import android.os.IBinder;
+import android.os.PowerManager;
+import androidx.core.app.NotificationCompat;
+import android.content.Context;
+
+import com.rfscanner.R;
+import com.rfscanner.models.Frequency;
+import com.rfscanner.models.SignalReading;
+import com.rfscanner.utils.SignalStrengthCalculator;
+
+public class ScannerService extends Service implements SensorEventListener {
+    private static final String CHANNEL_ID = "RFScannerChannel";
+    private static final int NOTIFICATION_ID = 1;
+    
+    private SensorManager sensorManager;
+    private PowerManager.WakeLock wakeLock;
+    private DemodulationService demodulationService;
+    private SignalStrengthCalculator signalCalculator;
+    private boolean isScanning = false;
+    private Frequency currentFrequency;
+    
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        initializeServices();
+        createNotificationChannel();
+        acquireWakeLock();
+    }
+
+    private void initializeServices() {
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        demodulationService = new DemodulationService();
+        signalCalculator = new SignalStrengthCalculator();
+        
+        // Register magnetic field sensor for signal strength approximation
+        Sensor magneticSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+        if (magneticSensor != null) {
+            sensorManager.registerListener(this, magneticSensor, 
+                SensorManager.SENSOR_DELAY_NORMAL);
+        }
+    }
+
+    private void acquireWakeLock() {
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                "RFScanner::ScanningWakeLock");
+        wakeLock.acquire(10*60*1000L /*10 minutes*/);
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            double frequency = intent.getDoubleExtra("frequency", 0.0);
+            String band = intent.getStringExtra("band");
+            startScanning(frequency, band);
+        }
+        
+        startForeground(NOTIFICATION_ID, createNotification());
+        return START_STICKY;
+    }
+
+    private void startScanning(double frequency, String band) {
+        isScanning = true;
+        currentFrequency = new Frequency(frequency);
+        
+        // Start continuous scanning thread
+        new Thread(() -> {
+            while (isScanning) {
+                scanFrequency();
+                try {
+                    Thread.sleep(100); // Scan every 100ms
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }).start();
+    }
+
+    private void scanFrequency() {
+        if (currentFrequency != null) {
+            // Calculate signal strength from sensor data
+            double signalStrength = signalCalculator.calculateSignalStrength();
+            currentFrequency.setSignalStrength(signalStrength);
+            
+            // Determine if frequency is active
+            boolean isActive = signalStrength > SignalStrengthCalculator.THRESHOLD;
+            currentFrequency.setActive(isActive);
+            
+            if (isActive) {
+                // Process the signal through demodulation
+                demodulationService.processSignal(currentFrequency);
+                
+                // Broadcast the results
+                broadcastResults();
+            }
+        }
+    }
+
+    private void broadcastResults() {
+        Intent intent = new Intent("com.rfscanner.SCAN_RESULT");
+        intent.putExtra("frequency", currentFrequency.getFrequency());
+        intent.putExtra("signalStrength", currentFrequency.getSignalStrength());
+        intent.putExtra("isActive", currentFrequency.isActive());
+        sendBroadcast(intent);
+    }
+
+    private Notification createNotification() {
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("RF Scanner Active")
+                .setContentText("Scanning for radio frequencies")
+                .setSmallIcon(R.drawable.ic_scanner)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build();
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "RF Scanner Service",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    @Override
+    public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
+            signalCalculator.updateMagneticReadings(event.values);
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        // Handle accuracy changes if needed
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        isScanning = false;
+        sensorManager.unregisterListener(this);
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+}
+package com.rfscanner.services;
+
+import com.rfscanner.models.Frequency;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+
+public class DemodulationService {
+    private static final int SAMPLE_RATE = 44100;
+    private static final int BUFFER_SIZE = AudioTrack.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+    );
+
+    private AudioTrack audioTrack;
+    private boolean isDemodulating = false;
+
+    public DemodulationService() {
+        initializeAudio();
+    }
+
+    private void initializeAudio() {
+        audioTrack = new AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                BUFFER_SIZE,
+                AudioTrack.MODE_STREAM
+        );
+    }
+
+    public void processSignal(Frequency frequency) {
+        if (!isDemodulating) {
+            isDemodulating = true;
+            startDemodulation(frequency);
+        }
+    }
+
+    private void startDemodulation(Frequency frequency) {
+        // Different demodulation methods based on frequency band
+        switch (frequency.getBand()) {
+            case "AM":
+                performAMDemodulation(frequency);
+                break;
+            case "FM":
+                performFMDemodulation(frequency);
+                break;
+            default:
+                performNFMDemodulation(frequency);
+                break;
+        }
+    }
+
+    private void performAMDemodulation(Frequency frequency) {
+        // AM Demodulation implementation
+        short[] buffer = new short[BUFFER_SIZE];
+        
+        // Simple envelope detection for AM
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            double t = i / (double) SAMPLE_RATE;
+            double signal = Math.abs(Math.sin(2 * Math.PI * frequency.getFrequency() * t));
+            buffer[i] = (short) (signal * Short.MAX_VALUE);
+        }
+        
+        playDemodulatedAudio(buffer);
+    }
+
+    private void performFMDemodulation(Frequency frequency) {
+        // FM Demodulation implementation
+        short[] buffer = new short[BUFFER_SIZE];
+        
+        // Simple frequency discrimination for FM
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            double t = i / (double) SAMPLE_RATE;
+            double modulation = Math.sin(2 * Math.PI * 1000 * t); // 1kHz modulation
+            double signal = Math.sin(2 * Math.PI * frequency.getFrequency() * t * (1 + 0.1 * modulation));
+            buffer[i] = (short) (signal * Short.MAX_VALUE);
+        }
+        
+        playDemodulatedAudio(buffer);
+    }
+
+    private void performNFMDemodulation(Frequency frequency) {
+        // Narrow FM Demodulation implementation
+        short[] buffer = new short[BUFFER_SIZE];
+        
+        // Simplified NFM demodulation
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            double t = i / (double) SAMPLE_RATE;
+            double signal = Math.sin(2 * Math.PI * frequency.getFrequency() * t);
+            buffer[i] = (short) (signal * Short.MAX_VALUE);
+        }
+        
+        playDemodulatedAudio(buffer);
+    }
+
+    private void playDemodulatedAudio(short[] buffer) {
+        if (audioTrack.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
+            audioTrack.play();
+        }
+        audioTrack.write(buffer, 0, buffer.length);
+    }
+
+    public void stopDemodulation() {
+        isDemodulating = false;
+        if (audioTrack != null) {
+            audioTrack.stop();
+            audioTrack.flush();
+        }
+    }
+
+    public void release() {
+        if (audioTrack != null) {
+            audioTrack.release();
+            audioTrack = null;
+        }
+    }
+}
+package com.rfscanner.utils;
+
+import android.util.Log;
+import java.util.ArrayDeque;
+import java.util.Queue;
+
+public class SignalStrengthCalculator {
+    public static final double THRESHOLD = -85.0; // dBm threshold for active signals
+    private static final int SAMPLE_SIZE = 10;
+    private static final double MAGNETIC_TO_DBM_FACTOR = 20.0;
+    
+    private Queue<Float> magneticReadings;
+    private float[] lastMagneticValues;
+    private double baselineNoise;
+
+    public SignalStrengthCalculator() {
+        magneticReadings = new ArrayDeque<>(SAMPLE_SIZE);
+        lastMagneticValues = new float[3];
+        calibrateBaseline();
+    }
+
+    public void updateMagneticReadings(float[] values) {
+        lastMagneticValues = values.clone();
+        double magnitude = calculateMagnitude(values);
+        
+        magneticReadings.offer((float) magnitude);
+        if (magneticReadings.size() > SAMPLE_SIZE) {
+            magneticReadings.poll();
+        }
+    }
+
+    private void calibrateBaseline() {
+        // Set initial baseline noise floor
+        baselineNoise = -100.0; // Default noise floor in dBm
+        
+        // Calibration period
+        new Thread(() -> {
+            try {
+                Thread.sleep(1000); // Wait 1 second for initial readings
+                double sum = 0;
+                int count = 0;
+                
+                for (Float reading : magneticReadings) {
+                    sum += reading;
+                    count++;
+                }
+                
+                if (count > 0) {
+                    baselineNoise = (sum / count) - 10; // Set baseline 10dB below average
+                }
+            } catch (InterruptedException e) {
+                Log.e("SignalCalculator", "Calibration interrupted", e);
+            }
+        }).start();
+    }
+
+    public double calculateSignalStrength() {
+        if (magneticReadings.isEmpty()) {
+            return -120.0; // Minimum detectable signal
+        }
+
+        double averageMagnitude = calculateAverageMagnitude();
+        double signalStrength = convertToDBm(averageMagnitude);
+        
+        // Apply noise reduction and filtering
+        signalStrength = applyNoiseReduction(signalStrength);
+        
+        return Math.max(-120.0, Math.min(0.0, signalStrength)); // Clamp between -120 and 0 dBm
+    }
+
+    private double calculateMagnitude(float[] values) {
+        return Math.sqrt(
+            values[0] * values[0] + 
+            values[1] * values[1] + 
+            values[2] * values[2]
+        );
+    }
+
+    private double calculateAverageMagnitude() {
+        double sum = 0;
+        for (Float reading : magneticReadings) {
+            sum += reading;
+        }
+        return sum / magneticReadings.size();
+    }
+
+    private double convertToDBm(double magnitude) {
+        // Convert magnetic field strength to dBm
+        // This is a simplified conversion for demonstration
+        return MAGNETIC_TO_DBM_FACTOR * Math.log10(magnitude) - baselineNoise;
+    }
+
+    private double applyNoiseReduction(double signalStrength) {
+        // Simple noise reduction using threshold
+        if (signalStrength < baselineNoise) {
+            return -120.0;
+        }
+        
+        // Apply smoothing
+        return smoothSignal(signalStrength);
+    }
+
+    private double smoothSignal(double currentSignal) {
+        // Exponential moving average smoothing
+        final double alpha = 0.7;
+        static double smoothedSignal = -120.0;
+        
+        smoothedSignal = alpha * currentSignal + (1 - alpha) * smoothedSignal;
+        return smoothedSignal;
+    }
+
+    public boolean isSignalActive(double signalStrength) {
+        return signalStrength > THRESHOLD;
+    }
+
+    public float[] getLastMagneticValues() {
+        return lastMagneticValues;
+    }
+
+    public void reset() {
+        magneticReadings.clear();
+        lastMagneticValues = new float[3];
+        calibrateBaseline();
+    }
+}
+package com.rfscanner.utils;
+
+public class FrequencyUtils {
+    // Frequency band ranges in Hz
+    public static final long VHF_MIN = 30_000_000;
+    public static final long VHF_MAX = 300_000_000;
+    public static final long UHF_MIN = 300_000_000;
+    public static final long UHF_MAX = 3_000_000_000L;
+    public static final long AM_MIN = 535_000;
+    public static final long AM_MAX = 1_700_000;
+    public static final long FM_MIN = 87_500_000;
+    public static final long FM_MAX = 108_000_000;
+
+    public static double convertToMHz(long frequencyHz) {
+        return frequencyHz / 1_000_000.0;
+    }
+
+    public static long convertToHz(double frequencyMHz) {
+        return (long) (frequencyMHz * 1_000_000);
+    }
+
+    public static String getBandForFrequency(long frequencyHz) {
+        if (frequencyHz >= VHF_MIN && frequencyHz <= VHF_MAX) {
+            return "VHF";
+        } else if (frequencyHz >= UHF_MIN && frequencyHz <= UHF_MAX) {
+            return "UHF";
+        } else if (frequencyHz >= AM_MIN && frequencyHz <= AM_MAX) {
+            return "AM";
+        } else if (frequencyHz >= FM_MIN && frequencyHz <= FM_MAX) {
+            return "FM";
+        } else {
+            return "OTHER";
+        }
+    }
+
+    public static boolean isValidFrequency(long frequencyHz, String band) {
+        switch (band) {
+            case "VHF":
+                return frequencyHz >= VHF_MIN && frequencyHz <= VHF_MAX;
+            case "UHF":
+                return frequencyHz >= UHF_MIN && frequencyHz <= UHF_MAX;
+            case "AM":
+                return frequencyHz >= AM_MIN && frequencyHz <= AM_MAX;
+            case "FM":
+                return frequencyHz >= FM_MIN && frequencyHz <= FM_MAX;
+            default:
+                return false;
+        }
+    }
+
+    public static String formatFrequency(long frequencyHz) {
+        if (frequencyHz >= 1_000_000_000) {
+            return String.format("%.3f GHz", frequencyHz / 1_000_000_000.0);
+        } else if (frequencyHz >= 1_000_000) {
+            return String.format("%.3f MHz", frequencyHz / 1_000_000.0);
+        } else if (frequencyHz >= 1_000) {
+            return String.format("%.3f kHz", frequencyHz / 1_000.0);
+        } else {
+            return String.format("%d Hz", frequencyHz);
+        }
+    }
+
+    public static long getStepSize(String band) {
+        switch (band) {
+            case "AM":
+                return 10_000; // 10 kHz steps
+            case "FM":
+                return 200_000; // 200 kHz steps
+            case "VHF":
+                return 12_500; // 12.5 kHz steps
+            case "UHF":
+                return 25_000; // 25 kHz steps
+            default:
+                return 100_000; // 100 kHz default step
+        }
+    }
+
+    public static long[] getBandLimits(String band) {
+        switch (band) {
+            case "AM":
+                return new long[]{AM_MIN, AM_MAX};
+            case "FM":
+                return new long[]{FM_MIN, FM_MAX};
+            case "VHF":
+                return new long[]{VHF_MIN, VHF_MAX};
+            case "UHF":
+                return new long[]{UHF_MIN, UHF_MAX};
+            default:
+                return new long[]{0, 0};
+        }
+    }
+}
+public class FrequencyUtils {
+    // Previous constants remain...
+    
+    // Cellular Bands (in Hz)
+    public static final long GSM_850_MIN = 824_000_000;
+    public static final long GSM_850_MAX = 894_000_000;
+    public static final long GSM_1900_MIN = 1_850_000_000L;
+    public static final long GSM_1900_MAX = 1_990_000_000L;
+    public static final long LTE_700_MIN = 698_000_000;
+    public static final long LTE_700_MAX = 787_000_000;
+    public static final long LTE_2100_MIN = 1_920_000_000L;
+    public static final long LTE_2100_MAX = 2_170_000_000L;
+    
+    // Digital Radio Bands
+    public static final long DAB_BAND_III_MIN = 174_928_000;
+    public static final long DAB_BAND_III_MAX = 239_200_000;
+    public static final long DECT_MIN = 1_880_000_000L;
+    public static final long DECT_MAX = 1_900_000_000L;
+
+    public static String getCellularBandType(long frequency) {
+        if (frequency >= GSM_850_MIN && frequency <= GSM_850_MAX) {
+            return "GSM-850";
+        } else if (frequency >= GSM_1900_MIN && frequency <= GSM_1900_MAX) {
+            return "GSM-1900";
+        } else if (frequency >= LTE_700_MIN && frequency <= LTE_700_MAX) {
+            return "LTE-700";
+        } else if (frequency >= LTE_2100_MIN && frequency <= LTE_2100_MAX) {
+            return "LTE-2100";
+        } else if (frequency >= DECT_MIN && frequency <= DECT_MAX) {
+            return "DECT";
+        } else if (frequency >= DAB_BAND_III_MIN && frequency <= DAB_BAND_III_MAX) {
+            return "DAB";
+        }
+        return "UNKNOWN";
+    }
+
+    public static boolean isCellularFrequency(long frequency) {
+        return (frequency >= GSM_850_MIN && frequency <= GSM_850_MAX) ||
+               (frequency >= GSM_1900_MIN && frequency <= GSM_1900_MAX) ||
+               (frequency >= LTE_700_MIN && frequency <= LTE_700_MAX) ||
+               (frequency >= LTE_2100_MIN && frequency <= LTE_2100_MAX);
+    }
+}
+package com.rfscanner.utils;
+
+public class DigitalDemodulator {
+    private static final int SAMPLE_RATE = 2_400_000; // 2.4 MHz sampling
+    private static final int FFT_SIZE = 2048;
+    
+    public enum ModulationType {
+        GSM,
+        LTE,
+        DECT,
+        DAB,
+        UNKNOWN
+    }
+
+    private ModulationType currentMode;
+    private boolean isLocked = false;
+
+    public DigitalDemodulator() {
+        currentMode = ModulationType.UNKNOWN;
+    }
+
+    public void processDigitalSignal(byte[] samples, long frequency) {
+        ModulationType detectedMode = detectModulation(frequency);
+        
+        switch (detectedMode) {
+            case GSM:
+                demodulateGSM(samples);
+                break;
+            case LTE:
+                demodulateLTE(samples);
+                break;
+            case DECT:
+                demodulateDECT(samples);
+                break;
+            case DAB:
+                demodulateDAB(samples);
+                break;
+            default:
+                // Handle unknown modulation
+                break;
+        }
+    }
+
+    private ModulationType detectModulation(long frequency) {
+        if (FrequencyUtils.getCellularBandType(frequency).startsWith("GSM")) {
+            return ModulationType.GSM;
+        } else if (FrequencyUtils.getCellularBandType(frequency).startsWith("LTE")) {
+            return ModulationType.LTE;
+        } else if (frequency >= FrequencyUtils.DECT_MIN && 
+                   frequency <= FrequencyUtils.DECT_MAX) {
+            return ModulationType.DECT;
+        } else if (frequency >= FrequencyUtils.DAB_BAND_III_MIN && 
+                   frequency <= FrequencyUtils.DAB_BAND_III_MAX) {
+            return ModulationType.DAB;
+        }
+        return ModulationType.UNKNOWN;
+    }
+
+    private void demodulateGSM(byte[] samples) {
+        // GSM uses GMSK modulation
+        // Implement GMSK demodulation
+        analyzeGMSKBurst(samples);
+    }
+
+    private void demodulateLTE(byte[] samples) {
+        // LTE uses OFDM
+        // Implement OFDM demodulation
+        analyzeLTEFrame(samples);
+    }
+
+    private void demodulateDECT(byte[] samples) {
+        // DECT uses GFSK
+        // Implement GFSK demodulation
+        analyzeGFSKPacket(samples);
+    }
+
+    private void demodulateDAB(byte[] samples) {
+        // DAB uses COFDM
+        // Implement COFDM demodulation
+        analyzeCOFDMFrame(samples);
+    }
+
+    private void analyzeGMSKBurst(byte[] samples) {
+        // GSM burst analysis
+        // This is a simplified implementation
+        isLocked = detectGSMSync(samples);
+    }
+
+    private void analyzeLTEFrame(byte[] samples) {
+        // LTE frame analysis
+        // This is a simplified implementation
+        isLocked = detectLTESync(samples);
+    }
+
+    private boolean detectGSMSync(byte[] samples) {
+        // Look for GSM training sequence
+        // Simplified implementation
+        return false;
+    }
+
+    private boolean detectLTESync(byte[] samples) {
+        // Look for LTE synchronization signals
+        // Simplified implementation
+        return false;
+    }
+
+    public boolean isSignalLocked() {
+        return isLocked;
+    }
+
+    public ModulationType getCurrentMode() {
+        return currentMode;
+    }
+}
+private DigitalDemodulator digitalDemodulator;
+
+// In initializeServices():
+digitalDemodulator = new DigitalDemodulator();
+
+// In scanFrequency():
+if (FrequencyUtils.isCellularFrequency(currentFrequency.getFrequency())) {
+    // Get raw samples from the radio hardware
+    byte[] samples = getRawSamples();
+    
+    // Process digital signal
+    digitalDemodulator.processDigitalSignal(samples, 
+        currentFrequency.getFrequency());
+    
+    // Update status
+    currentFrequency.setActive(digitalDemodulator.isSignalLocked());
+    
+    // Additional information
+    String modType = digitalDemodulator.getCurrentMode().toString();
+    // Update UI with modulation type
+}
+// Modified frequency ranges actually accessible:
+public class FrequencyUtils {
+    // Available bands
+    public static final long WIFI_2G_MIN = 2_400_000_000L;
+    public static final long WIFI_2G_MAX = 2_483_500_000L;
+    public static final long WIFI_5G_MIN = 5_150_000_000L;
+    public static final long WIFI_5G_MAX = 5_825_000_000L;
+    
+    // Bluetooth range
+    public static final long BT_MIN = 2_402_000_000L;
+    public static final long BT_MAX = 2_480_000_000L;
+}
+package com.rfscanner.network;
+
+import android.media.MediaPlayer;
+import android.os.AsyncTask;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.json.JSONObject;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+
+public class InternetRadioScanner {
+    private static final String RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json/stations";
+    private static final String STREAM_CHECK_API = "https://de1.api.radio-browser.info/json/streams/";
+    
+    private MediaPlayer mediaPlayer;
+    private OkHttpClient client;
+    private Map<String, List<RadioStation>> stationCache;
+    private OnScanResultListener listener;
+
+    public class RadioStation {
+        public String name;
+        public String url;
+        public String genre;
+        public String country;
+        public String codec;
+        public int bitrate;
+        public boolean isOnline;
+        public int listeners;
+        
+        public RadioStation(JSONObject json) {
+            this.name = json.optString("name");
+            this.url = json.optString("url");
+            this.genre = json.optString("tags");
+            this.country = json.optString("country");
+            this.codec = json.optString("codec");
+            this.bitrate = json.optInt("bitrate");
+            this.isOnline = json.optBoolean("lastcheckok");
+            this.listeners = json.optInt("clickcount");
+        }
+    }
+
+    public interface OnScanResultListener {
+        void onStationsFound(List<RadioStation> stations);
+        void onStreamQualityUpdate(String stationName, int bitrate, int listeners);
+        void onError(String error);
+    }
+
+    public InternetRadioScanner(OnScanResultListener listener) {
+        this.listener = listener;
+        this.client = new OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build();
+        this.stationCache = new HashMap<>();
+        this.mediaPlayer = new MediaPlayer();
+    }
+
+    public void scanByGenre(String genre) {
+        new AsyncTask<String, Void, List<RadioStation>>() {
+            @Override
+            protected List<RadioStation> doInBackground(String... params) {
+                try {
+                    String url = RADIO_BROWSER_API + "/bytagexact/" + params[0];
+                    Request request = new Request.Builder()
+                        .url(url)
+                        .build();
+
+                    String response = client.newCall(request).execute().body().string();
+                    JSONArray stations = new JSONArray(response);
+                    List<RadioStation> results = new ArrayList<>();
+
+                    for (int i = 0; i < stations.length(); i++) {
+                        RadioStation station = new RadioStation(stations.getJSONObject(i));
+                        if (station.isOnline) {
+                            results.add(station);
+                        }
+                    }
+                    return results;
+
+                } catch (Exception e) {
+                    listener.onError("Error scanning genre: " + e.getMessage());
+                    return new ArrayList<>();
+                }
+            }
+
+            @Override
+            protected void onPostExecute(List<RadioStation> results) {
+                stationCache.put(genre, results);
+                listener.onStationsFound(results);
+            }
+        }.execute(genre);
+    }
+
+    public void scanByCountry(String country) {
+        new AsyncTask<String, Void, List<RadioStation>>() {
+            @Override
+            protected List<RadioStation> doInBackground(String... params) {
+                try {
+                    String url = RADIO_BROWSER_API + "/bycountryexact/" + params[0];
+                    // Similar implementation to scanByGenre
+                    // ...
+                }
+            }
+        }.execute(country);
+    }
+
+    public void checkStreamQuality(RadioStation station) {
+        new AsyncTask<RadioStation, Void, StreamQuality>() {
+            @Override
+            protected StreamQuality doInBackground(RadioStation... params) {
+                try {
+                    // Test stream connection and measure quality
+                    URL url = new URL(params[0].url);
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("HEAD");
+                    
+                    if (connection.getResponseCode() == HttpURLConnection.HTTP_OK) {
+                        return new StreamQuality(
+                            params[0].bitrate,
+                            connection.getHeaderField("icy-br"),
+                            params[0].listeners
+                        );
+                    }
+                    return null;
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+
+            @Override
+            protected void onPostExecute(StreamQuality quality) {
+                if (quality != null) {
+                    listener.onStreamQualityUpdate(
+                        station.name,
+                        quality.bitrate,
+                        quality.listeners
+                    );
+                }
+            }
+        }.execute(station);
+    }
+
+    public void playStation(RadioStation station) {
+        try {
+            mediaPlayer.reset();
+            mediaPlayer.setDataSource(station.url);
+            mediaPlayer.prepareAsync();
+            mediaPlayer.setOnPreparedListener(mp -> mp.start());
+        } catch (Exception e) {
+            listener.onError("Error playing station: " + e.getMessage());
+        }
+    }
+
+    public void stopPlayback() {
+        if (mediaPlayer.isPlaying()) {
+            mediaPlayer.stop();
+        }
+    }
+
+    public void release() {
+        mediaPlayer.release();
+        client.dispatcher().executorService().shutdown();
+    }
+
+    public List<RadioStation> getCachedStations(String genre) {
+        return stationCache.getOrDefault(genre, new ArrayList<>());
+    }
+}
+public class MainActivity extends AppCompatActivity implements InternetRadioScanner.OnScanResultListener {
+    private InternetRadioScanner radioScanner;
+    private RecyclerView stationList;
+    private StationAdapter adapter;
+    private Spinner genreSpinner;
+    private ProgressBar signalMeter;
+    private Button scanButton;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        radioScanner = new InternetRadioScanner(this);
+        initializeViews();
+        setupGenreSpinner();
+    }
+
+    private void initializeViews() {
+        stationList = findViewById(R.id.stationList);
+        genreSpinner = findViewById(R.id.genreSpinner);
+        signalMeter = findViewById(R.id.signalMeter);
+        scanButton = findViewById(R.id.btnStartScan);
+
+        adapter = new StationAdapter(new ArrayList<>(), station -> {
+            radioScanner.playStation(station);
+            radioScanner.checkStreamQuality(station);
+        });
+
+        stationList.setAdapter(adapter);
+        stationList.setLayoutManager(new LinearLayoutManager(this));
+
+        scanButton.setOnClickListener(v -> {
+            String genre = genreSpinner.getSelectedItem().toString();
+            radioScanner.scanByGenre(genre);
+        });
+    }
+
+    @Override
+    public void onStationsFound(List<InternetRadioScanner.RadioStation> stations) {
+        adapter.updateStations(stations);
+    }
+
+    @Override
+    public void onStreamQualityUpdate(String stationName, int bitrate, int listeners) {
+        // Update UI with stream quality info
+        signalMeter.setProgress(bitrate / 320); // Normalize to 320kbps max
+    }
+
+    @Override
+    public void onError(String error) {
+        Toast.makeText(this, error, Toast.LENGTH_SHORT).show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        radioScanner.release();
+    }
+}
+package com.rfscanner.scanner;
+
+import android.media.AudioRecord;
+import android.media.AudioFormat;
+import android.media.MediaRecorder;
+import org.jtransforms.fft.DoubleFFT_1D;
+
+public class FrequencyScanner {
+    private static final int SAMPLE_RATE = 44100;
+    private static final int FFT_SIZE = 4096;
+    private static final int BUFFER_SIZE = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+    );
+
+    public enum ScanMode {
+        SHORTWAVE,
+        UTILITY,
+        HF_LF,
+        INTERNET
+    }
+
+    // Frequency ranges in Hz
+    public static final class Bands {
+        // Longwave
+        public static final int LW_START = 153000;
+        public static final int LW_END = 279000;
+        
+        // Medium wave
+        public static final int MW_START = 530000;
+        public static final int MW_END = 1700000;
+        
+        // Shortwave bands
+        public static final int SW_120M = 2300000;
+        public static final int SW_90M = 3200000;
+        public static final int SW_75M = 3900000;
+        public static final int SW_60M = 4750000;
+        public static final int SW_49M = 5900000;
+        public static final int SW_41M = 7200000;
+        public static final int SW_31M = 9400000;
+        public static final int SW_25M = 11600000;
+        public static final int SW_22M = 13570000;
+        public static final int SW_19M = 15100000;
+        public static final int SW_16M = 17480000;
+        public static final int SW_15M = 18900000;
+        public static final int SW_13M = 21450000;
+        public static final int SW_11M = 25670000;
+    }
+
+    private AudioRecord audioRecord;
+    private boolean isScanning;
+    private DoubleFFT_1D fft;
+    private double[] fftBuffer;
+    private OnScanListener scanListener;
+    private ScanMode currentMode;
+
+    public interface OnScanListener {
+        void onFrequencyFound(int frequency, double strength, String mode);
+        void onBandChange(String band);
+        void onError(String error);
+    }
+
+    public FrequencyScanner(OnScanListener listener) {
+        this.scanListener = listener;
+        this.fft = new DoubleFFT_1D(FFT_SIZE);
+        this.fftBuffer = new double[FFT_SIZE * 2];
+        initializeAudioRecord();
+    }
+
+    private void initializeAudioRecord() {
+        audioRecord = new AudioRecord(
+                MediaRecorder.AudioSource.UNPROCESSED, // Raw audio
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                BUFFER_SIZE
+        );
+    }
+
+    public void startScanning(ScanMode mode) {
+        currentMode = mode;
+        isScanning = true;
+        
+        new Thread(() -> {
+            audioRecord.startRecording();
+            short[] audioBuffer = new short[BUFFER_SIZE];
+            
+            while (isScanning) {
+                switch (currentMode) {
+                    case SHORTWAVE:
+                        scanShortwave(audioBuffer);
+                        break;
+                    case UTILITY:
+                        scanUtilityFrequencies(audioBuffer);
+                        break;
+                    case HF_LF:
+                        scanHFLF(audioBuffer);
+                        break;
+                }
+            }
+        }).start();
+    }
+
+    private void scanShortwave(short[] buffer) {
+        // Shortwave bands scanning
+        int[] swBands = {
+            Bands.SW_120M, Bands.SW_90M, Bands.SW_75M,
+            Bands.SW_60M, Bands.SW_49M, Bands.SW_41M,
+            Bands.SW_31M, Bands.SW_25M, Bands.SW_22M,
+            Bands.SW_19M, Bands.SW_16M, Bands.SW_13M
+        };
+
+        for (int bandStart : swBands) {
+            if (!isScanning) break;
+            
+            scanListener.onBandChange("SW " + (bandStart / 1000000) + "MHz");
+            performFFTScan(buffer, bandStart, bandStart + 100000, 5000);
+            
+            try {
+                Thread.sleep(100); // Pause between bands
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void scanUtilityFrequencies(short[] buffer) {
+        // Utility frequencies (weather, time signals, etc)
+        int[] utilityFreqs = {
+            2500000,  // WWV Time
+            3330000,  // CHU Time
+            4996000,  // RWM Time
+            5000000,  // WWV Time
+            8638000,  // Weather Fax
+            10000000, // WWV Time
+            14670000  // Time Signal
+        };
+
+        for (int freq : utilityFreqs) {
+            if (!isScanning) break;
+            
+            scanListener.onBandChange("UTIL " + (freq / 1000000) + "MHz");
+            performFFTScan(buffer, freq - 1000, freq + 1000, 100);
+        }
+    }
+
+    private void scanHFLF(short[] buffer) {
+        // HF/LF bands
+        scanListener.onBandChange("LW/MW");
+        performFFTScan(buffer, Bands.LW_START, Bands.LW_END, 9000);
+        performFFTScan(buffer, Bands.MW_START, Bands.MW_END, 10000);
+    }
+
+    private void performFFTScan(short[] buffer, int startFreq, int endFreq, int step) {
+        int read = audioRecord.read(buffer, 0, BUFFER_SIZE);
+        
+        if (read > 0) {
+            // Convert audio data to FFT input
+            for (int i = 0; i < read && i < FFT_SIZE; i++) {
+                fftBuffer[i] = buffer[i] * getWindow(i, FFT_SIZE);
+            }
+
+            // Perform FFT
+            fft.realForward(fftBuffer);
+
+            // Analyze FFT results
+            analyzeFftResults(startFreq, endFreq, step);
+        }
+    }
+
+    private double getWindow(int index, int size) {
+        // Hanning window function
+        return 0.5 * (1 - Math.cos((2 * Math.PI * index) / (size - 1)));
+    }
+
+    private void analyzeFftResults(int startFreq, int endFreq, int step) {
+        for (int freq = startFreq; freq <= endFreq; freq += step) {
+            int bin = (freq * FFT_SIZE) / SAMPLE_RATE;
+            if (bin >= FFT_SIZE) continue;
+
+            double magnitude = Math.sqrt(
+                fftBuffer[bin] * fftBuffer[bin] + 
+                fftBuffer[bin + 1] * fftBuffer[bin + 1]
+            );
+
+            if (magnitude > getThresholdForBand(freq)) {
+                String mode = detectModulation(fftBuffer, bin);
+                scanListener.onFrequencyFound(freq, magnitude, mode);
+            }
+        }
+    }
+
+    private double getThresholdForBand(int frequency) {
+        // Different thresholds for different bands
+        if (frequency < 500000) return 100; // LF
+        if (frequency < 2000000) return 150; // MF
+        if (frequency < 10000000) return 200; // Lower HF
+        return 250; // Upper HF
+    }
+
+    private String detectModulation(double[] fftData, int centerBin) {
+        // Simple modulation detection
+        double sideband = Math.abs(fftData[centerBin + 1] - fftData[centerBin - 1]);
+        double carrier = fftData[centerBin];
+        
+        if (carrier > 1000 && sideband < 100) return "CW";
+        if (sideband > carrier * 0.8) return "SSB";
+        if (Math.abs(fftData[centerBin + 2] - fftData[centerBin - 2]) > 500) return "AM";
+        return "DIGITAL";
+    }
+
+    public void stopScanning() {
+        isScanning = false;
+        if (audioRecord != null) {
+            audioRecord.stop();
+            audioRecord.release();
+        }
+    }
+}
+public class MainActivity extends AppCompatActivity {
+    private FrequencyScanner scanner;
+    private InternetRadioScanner internetScanner;
+    private TextView frequencyText;
+    private TextView modeText;
+    private ProgressBar signalMeter;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        scanner = new FrequencyScanner(new FrequencyScanner.OnScanListener() {
+            @Override
+            public void onFrequencyFound(int frequency, double strength, String mode) {
+                runOnUiThread(() -> {
+                    frequencyText.setText(formatFrequency(frequency));
+                    modeText.setText(mode);
+                    signalMeter.setProgress((int)(strength * 100));
+                });
+            }
+
+            @Override
+            public void onBandChange(String band) {
+                runOnUiThread(() -> 
+                    Toast.makeText(MainActivity.this, 
+                        "Scanning: " + band, Toast.LENGTH_SHORT).show()
+                );
+            }
+
+            @Override
+            public void onError(String error) {
+                runOnUiThread(() -> 
+                    Toast.makeText(MainActivity.this, 
+                        "Error: " + error, Toast.LENGTH_LONG).show()
+                );
+            }
+        });
+
+        Button btnStartScan = findViewById(R.id.btnStartScan);
+        btnStartScan.setOnClickListener(v -> {
+            scanner.startScanning(FrequencyScanner.ScanMode.SHORTWAVE);
+        });
+    }
+
+    private String formatFrequency(int freq) {
+        if (freq >= 1000000) {
+            return String.format("%.3f MHz", freq / 1000000.0);
+        } else {
+            return String.format("%.1f kHz", freq / 1000.0);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        scanner.stopScanning();
+    }
+}
